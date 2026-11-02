@@ -1,70 +1,41 @@
-# Orbit Tracing: operations and security
+# Orbit Tracing: operations
 
-This guide organizes runtime behavior documented by the package. It does not certify production readiness. Verify provider/client versions, permissions, transport security, limits, and failure behavior in the target environment before release.
+`orbit-tracing` has no endpoint or exporter defaults. The application creates the exporter, passes
+it to `OpenTelemetryPlugin`, registers the plugin, and uses the plugin as the tracer supplied to
+Core `Runtime`. Install `orbit-tracing[otlp-http]` or `[otlp-grpc]` only when using those exporters;
+other `SpanExporter` implementations can be supplied by the application.
 
-## Configuration surface
+## Lifecycle and ASGI order
 
-Environment names found in the package README:
+The plugin owns the exporter after construction and shuts down its provider during the application
+plugin lifecycle. Provider shutdown runs in a worker thread so exporter flushing does not block the
+event loop. Do not independently shut down the transferred exporter or provider from another hook.
 
-The package README does not name `ORBIT_*` variables. Use its typed constructors and application configuration, and confirm exact runtime inputs in the implementation before deployment.
+If using W3C inbound extraction, wrap the Core runtime with `plugin.wrap_asgi(runtime)`. The
+propagation wrapper must be outside Core so remote context is attached before request spans begin.
+It passes lifespan and non-HTTP scopes through. For outbound calls, invoke `inject_context(headers)`
+inside the active span and use an application-managed client.
 
-Use the package README's constructor and deployment examples. Store credentials in a secret manager and avoid logging credentials, raw provider errors, request data, or opaque cursors.
+## Configuration and capacity
 
-## Lifecycle, failure behavior, and limits
+`OpenTelemetryConfig` defaults to a queue of 2,048 spans, export batches of 512, a 5-second
+scheduled delay, and a 30-second export timeout. Queue size is limited to 100,000; batch size must
+not exceed queue size. Choose queue and batch settings based on request volume, acceptable memory
+use, exporter throughput, and shutdown budget. These settings do not guarantee that spans reach a
+collector.
 
-`orbit-tracing` adapts Orbit Core's provider-neutral `Tracer` contract to an isolated
-OpenTelemetry SDK provider. The package is optional: Core keeps its bounded `InMemoryTracer` and
-does not depend on OpenTelemetry.
+The adapter sets up to 128 attributes per span, 4,096 characters per string, and at most 128
+sequence elements. Monitor exporter failures, queue drops, export latency, and shutdown duration
+using the selected SDK/exporter diagnostics. Sampling is not customized by this package.
 
-Install the adapter and, for OTLP over HTTP, its optional exporter extra:
+## Failure modes and deployment
 
-```bash
-pip install orbit-core 'orbit-tracing[otlp-http]'
-```
+Use verified TLS and authenticated exporter endpoints when required by the deployment. Configure
+collector availability, retry behavior, sampling, and data retention in the exporter/collector
+stack. Traces are diagnostic telemetry and should not be used as the durable record of business
+events.
 
-```python
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from orbit import Application, ApplicationConfig
-from orbit.runtime import Runtime
-from orbit_tracing import OpenTelemetryConfig, OpenTelemetryPlugin
-
-application = Application(ApplicationConfig(name="orders"))
-tracing = OpenTelemetryPlugin(
-    OpenTelemetryConfig(service_name="orders-api"),
-    exporter=OTLPSpanExporter(endpoint="http://localhost:4318/v1/traces"),
-)
-application.register_plugin(tracing)
-runtime = Runtime(application, tracer=tracing)
-# Wrap outside Runtime so remote context is active before Core starts its request span.
-runtime = tracing.wrap_asgi(runtime)
-```
-
-The configured exporter is owned by the plugin's SDK provider. Orbit's application lifecycle shuts
-the provider down off the event loop, flushing its batch processor. The adapter never changes
-OpenTelemetry's process-global provider, so applications can compose its provider explicitly.
-Span names, identifiers, statuses, and attributes are translated to the Core `Tracer`/`Span`
-contract; attributes are type-checked and bounded. Exception objects and messages are deliberately
-not copied into spans. Use `orbit-tracing[otlp-grpc]` for the optional OTLP gRPC exporter, or pass
-another OpenTelemetry `SpanExporter` from the application.
-
-Inbound W3C Trace Context extraction is opt-in: `wrap_asgi()` reads one bounded, unique
-`traceparent` (and optional `tracestate`) from HTTP scopes and attaches valid context while Core
-handles the request. Invalid or duplicate propagation headers are ignored. The wrapper must be
-outside `Runtime`; lifespan and non-HTTP ASGI scopes pass through unchanged. For an outbound request,
-call `tracing.inject_context(headers)` while a span is active, then let the application-owned client
-send those headers. This package does not install automatic HTTP instrumentation or choose a client.
-It does not provide metrics, logs, a sampling policy, or an observability dashboard.
-
-OpenTelemetry's [Python instrumentation guide](https://opentelemetry.io/docs/languages/python/instrumentation/)
-describes tracer-provider and span setup. Its [exporter guide](https://opentelemetry.io/docs/languages/python/exporters/)
-covers OTLP HTTP/gRPC exporters and batch processors. No collector or live backend is required by
-the unit tests, and none was exercised for this package.
-
-## Status
-
-This package is pre-alpha; its API is not stable and it is not yet published. It supports Python
-3.11 through 3.14. Licensed under Apache-2.0.
-
-## Production validation
-
-Validate startup/shutdown cleanup, timeout and cancellation behavior, concurrency and payload bounds where applicable, secret rotation and least-privilege access, data durability, backup/restore, and failover against the selected provider. Do not infer distributed or durable guarantees from an in-process API or fake-client tests.
+Validate startup/shutdown ordering, exporter flush on normal stop, interruption during export,
+network outage behavior, queue saturation, and W3C propagation through the real ingress/proxy path
+in a representative non-production environment. Unit tests use an in-memory exporter and do not
+validate collector delivery or deployment topology.

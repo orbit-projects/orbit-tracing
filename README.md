@@ -30,9 +30,12 @@ runtime = tracing.wrap_asgi(runtime)
 The configured exporter is owned by the plugin's SDK provider. Orbit's application lifecycle shuts
 the provider down off the event loop, flushing its batch processor. The adapter never changes
 OpenTelemetry's process-global provider, so applications can compose its provider explicitly.
+The plugin contributes a **Flush pending traces** action to Orbit CLI. It runs the bounded SDK
+flush off the event loop and reports only whether the exporter accepted the queued spans.
 Span names, identifiers, statuses, and attributes are translated to the Core `Tracer`/`Span`
 contract; attributes are type-checked and bounded. Exception objects and messages are deliberately
-not copied into spans. Use `orbit-tracing[otlp-grpc]` for the optional OTLP gRPC exporter, or pass
+not copied into spans. Attribute integers use OpenTelemetry's signed 64-bit range, and attribute
+arrays must be homogeneous primitive values. Use `orbit-tracing[otlp-grpc]` for the optional OTLP gRPC exporter, or pass
 another OpenTelemetry `SpanExporter` from the application.
 
 Inbound W3C Trace Context extraction is opt-in: `wrap_asgi()` reads one bounded, unique
@@ -65,6 +68,6 @@ mypy
 
 ## Status
 
-This package is pre-alpha; its API is not stable and it is not yet published. It supports Python
+This package is alpha; its API is not stable and it is not yet published. It supports Python
 3.11 through 3.14. Licensed under Apache-2.0.
 

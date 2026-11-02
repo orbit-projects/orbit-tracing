@@ -1,21 +1,36 @@
 # Orbit Tracing: development
 
-This package declares support for `>=3.11,<3.15` in `pyproject.toml`. That declaration is distinct from evidence that hosted CI ran.
+This repository adapts Core tracing interfaces to the OpenTelemetry SDK. Keep OpenTelemetry's
+provider local to this plugin and preserve Core's public `Tracer`/`Span` boundary.
 
-Use the checks for each language manifest present in this repository:
+## Local setup and checks
 
-### Python package
+From the repository root:
 
 ```bash
-python -m pip install -e '.[dev]' build
+python -m pip install -e ../orbit-core
+python -m pip install -e ../orbit-testing
+python -m pip install -e '.[dev,otlp-http]' build
 pytest
 ruff check src tests
 ruff format --check src tests
 mypy
+python -m build
 ```
 
-Optional SDKs and live-service tests are described by the package README. Do not run an opt-in live test against a shared or production service unless its own documentation explicitly supports that use.
+The test suite uses an in-memory OpenTelemetry exporter and Orbit's test client. It does not
+require an OTLP collector, remote exporter credentials, or live ingress.
 
-## Contribution expectations
+## Change guidance
 
-Add focused regression coverage for behavior changes. Update the README and relevant guide when a contract, configuration option, security property, lifecycle rule, or operational assumption changes. Report the exact versions and services exercised; local checks do not imply hosted CI or release validation.
+- Keep one isolated `TracerProvider`; do not install a process-global provider implicitly.
+- Maintain lifecycle ownership of the exporter and test shutdown after normal use and cancellation.
+- Keep attribute validation aligned with the Core span protocol and OpenTelemetry primitive types;
+  test signed integer limits, non-finite floats, homogeneous arrays, and size bounds.
+- Validate propagation header count/size and restore attached context in `finally` blocks.
+- Do not add exception messages, request bodies, credentials, or arbitrary Core data to spans.
+- Update README examples and architecture, operations, and security guidance when changing limits,
+  provider behavior, or propagation.
+
+Follow the repository contribution guide, governance, code of conduct, and security policy. Keep
+tests deterministic and report the exact OpenTelemetry SDK/exporter versions validated.

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import MutableMapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from types import TracebackType
 from typing import Any, cast
@@ -32,7 +32,7 @@ from opentelemetry.trace import Status, StatusCode
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 from orbit.asgi.types import Receive, Scope, Send
 from orbit.diagnostics.tracing import Span, Tracer
-from orbit.plugins import Plugin, PluginMetadata
+from orbit.plugins import ControlAction, ControlResult, Plugin, PluginMetadata
 from orbit.runtime.context import bind_span_id, bind_trace_id, reset_span_id, reset_trace_id
 
 from orbit_tracing.config import OpenTelemetryConfig
@@ -41,6 +41,8 @@ _MAX_SPAN_ATTRIBUTES = 128
 _MAX_ATTRIBUTE_LENGTH = 4_096
 _MAX_ASGI_HEADERS = 1_000
 _MAX_TRACE_HEADER_BYTES = 512
+_MIN_ATTRIBUTE_INTEGER = -(2**63)
+_MAX_ATTRIBUTE_INTEGER = 2**63 - 1
 
 
 class OpenTelemetryPlugin(Plugin):
@@ -90,6 +92,14 @@ class OpenTelemetryPlugin(Plugin):
         self._propagator = TraceContextTextMapPropagator()
         self._closing = False
         self._shutdown_task: asyncio.Task[None] | None = None
+        self.control_actions = (
+            ControlAction(
+                id="flush-traces",
+                title="Flush pending traces",
+                description="Export queued spans within the configured exporter timeout.",
+                handler=self._flush_traces,
+            ),
+        )
 
     @property
     def tracer(self) -> Tracer:
@@ -129,6 +139,21 @@ class OpenTelemetryPlugin(Plugin):
         if not isinstance(carrier, MutableMapping):
             raise TypeError("Trace propagation carrier must be a mutable string mapping.")
         self._propagator.inject(carrier)
+
+    async def _flush_traces(self, _: Mapping[str, object]) -> ControlResult:
+        """Flush queued spans off-loop within the configured exporter deadline."""
+        if self._closing:
+            return ControlResult("Trace exporter is shutting down.", succeeded=False)
+        flushed = await asyncio.to_thread(
+            self._provider.force_flush,
+            timeout_millis=self.config.export_timeout_millis,
+        )
+        return ControlResult(
+            "Pending traces were exported."
+            if flushed
+            else "Trace exporter did not flush before its deadline.",
+            succeeded=flushed,
+        )
 
     async def activate(self) -> None:
         """Ensure the provider has not already been shut down before application startup."""
@@ -300,10 +325,16 @@ def _trace_carrier(scope: Scope) -> dict[str, str] | None:
 
 
 def _attribute_value(value: Any) -> bool | int | float | str | Sequence[bool | int | float | str]:
-    """Accept only bounded scalar or homogeneous sequence values supported by OTel."""
+    """Accept bounded scalar and homogeneous sequence values supported by OTel.
+
+    Integer bounds match OpenTelemetry's signed 64-bit attribute primitive. Strings and arrays
+    are separately bounded before the SDK can retain them on a span.
+    """
     if isinstance(value, bool):
         return value
     if isinstance(value, int):
+        if not _MIN_ATTRIBUTE_INTEGER <= value <= _MAX_ATTRIBUTE_INTEGER:
+            raise ValueError("Span integer attributes must fit a signed 64-bit value.")
         return value
     if isinstance(value, float):
         if not math.isfinite(value):

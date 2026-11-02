@@ -166,6 +166,10 @@ async def test_plugin_does_not_change_process_global_tracer_provider() -> None:
     global_provider = otel_trace.get_tracer_provider()
     plugin = _plugin(InMemorySpanExporter())
     await plugin.activate()
+    async with plugin.start_span("control-room-check"):
+        pass
+    result = await plugin.control_actions[0].handler({})
+    assert result is not None and result.succeeded
     await plugin.deactivate()
     assert otel_trace.get_tracer_provider() is global_provider
 
@@ -176,6 +180,12 @@ async def test_attributes_are_bounded_and_reject_unsupported_values() -> None:
     async with plugin.start_span("bounded") as span:
         with pytest.raises(ValueError, match="finite"):
             span.set_attribute("bad.float", math.inf)
+        with pytest.raises(ValueError, match="signed 64-bit"):
+            span.set_attribute("bad.integer", 2**63)
+        with pytest.raises(ValueError, match="signed 64-bit"):
+            span.set_attribute("bad.negative-integer", -(2**63) - 1)
+        span.set_attribute("minimum.integer", -(2**63))
+        span.set_attribute("maximum.integer", 2**63 - 1)
         with pytest.raises(TypeError, match="homogeneous"):
             span.set_attribute("bad.sequence", [1, "mixed"])
         with pytest.raises(TypeError, match="supported"):

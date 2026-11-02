@@ -1,17 +1,38 @@
 # Orbit Tracing: security
 
-## Package-specific security guidance
+Trace data leaves the process through the configured exporter and may be retained by collectors,
+backends, and third-party observability services. Attribute validation limits type and size; it
+does not determine whether a value is safe to export.
 
-The README does not define separate package-specific security guarantees. Follow the implemented API and provider documentation; do not infer security properties that are not documented and tested.
+## Sensitive attributes
 
-## Credentials and sensitive data
+Never attach passwords, access tokens, cookies, authorization headers, encryption keys, request or
+response bodies, or unnecessary personal/regulated data. Prefer bounded, low-cardinality
+operational attributes. Avoid using user IDs, request IDs, email addresses, or raw URLs as metric
+labels or span attributes unless their collection and retention are approved. Span names and
+attribute names should not include caller-supplied secrets.
 
-Use least-privilege credentials and a secret manager for provider secrets. Do not commit secrets, tokens, private keys, personal data, request bodies, raw provider errors, or opaque cursors. Enable TLS certificate verification for remote services unless package documentation gives a narrowly scoped local-development exception.
+The adapter deliberately does not copy exception messages or exception objects onto spans. Values
+you explicitly pass to `set_attribute` are still exported. String/control/sequence/numeric limits
+prevent some malformed or unbounded data but are not redaction.
 
-## Vulnerability disclosure
+## Propagation trust
 
-Follow the repository [security policy](../../SECURITY.md). Do not post vulnerability details in public issues. The policy describes private reporting alternatives without claiming that a hosting-platform setting is enabled.
+W3C headers are untrusted input. Inbound extraction is opt-in and ignores duplicate or malformed
+header shapes. A valid remote trace ID is correlation context, not an authenticated identity. Do
+not use trace headers for authorization or tenant selection. Configure ingress limits and TLS at the
+network boundary.
 
-## Limits
+Outbound injection writes trace context into the supplied carrier. Ensure the destination is
+permitted to receive that correlation data and do not reuse a carrier containing credentials or
+unrelated headers across trust boundaries.
 
-This page records source and package documentation, not an independent security audit. Validate the package, its provider SDKs, and its deployment configuration before production use.
+## Exporter and collector
+
+Protect exporter endpoints with verified TLS and suitable authentication. Keep endpoint credentials
+out of logs and configuration examples. Apply least-privilege access, retention, deletion, and
+region controls in the collector/backend. Review the OpenTelemetry SDK/exporter diagnostics for
+whether failed exports can expose endpoint details.
+
+Follow the repository [security policy](../../SECURITY.md) for private vulnerability reporting.
+This page describes the adapter boundary and is not a collector or deployment security audit.
